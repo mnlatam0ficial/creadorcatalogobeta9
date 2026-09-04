@@ -1,0 +1,71 @@
+name: Deploy catalog to GitHub Pages
+
+on:
+  push:
+    branches: ["principal"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar sitio
+        shell: bash
+        run: |
+          rm -rf _site /tmp/catalogo
+          mkdir -p _site /tmp/catalogo
+          unzip -q creadorcatalogobeta9.zip -d /tmp/catalogo
+          cp -R /tmp/catalogo/creadorcatalogobeta9/. _site/
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("_site/index.html")
+          s = p.read_text(encoding="utf-8")
+          s = s.replace("navigator.serviceWorker.register('/sw.js')",
+                        "navigator.serviceWorker.register('./sw.js')")
+          p.write_text(s, encoding="utf-8")
+
+          p = Path("_site/manifest.json")
+          s = p.read_text(encoding="utf-8")
+          s = s.replace('"start_url": "/"', '"start_url": "./"')
+          s = s.replace('"scope": "/"', '"scope": "./"')
+          s = s.replace('"src": "/icons/', '"src": "./icons/')
+          p.write_text(s, encoding="utf-8")
+
+          p = Path("_site/sw.js")
+          p.write_text("const CACHE = 'mnlatam-catalogos-v10';\nconst BASE = self.registration.scope;\nconst ASSETS = [\n  new URL('./', BASE).href,\n  new URL('./index.html', BASE).href,\n  new URL('./styles.css', BASE).href,\n  new URL('./app.js', BASE).href,\n  new URL('./manifest.json', BASE).href,\n  new URL('./assets/logo.png', BASE).href,\n  new URL('./icons/icon-192.png', BASE).href,\n  new URL('./icons/icon-512.png', BASE).href\n];\n\nself.addEventListener('install', event => {\n  event.waitUntil(\n    caches.open(CACHE)\n      .then(cache => cache.addAll(ASSETS))\n      .then(() => self.skipWaiting())\n  );\n});\n\nself.addEventListener('activate', event => {\n  event.waitUntil(\n    caches.keys()\n      .then(keys => Promise.all(\n        keys.filter(key => key !== CACHE).map(key => caches.delete(key))\n      ))\n      .then(() => self.clients.claim())\n  );\n});\n\nself.addEventListener('fetch', event => {\n  if (event.request.method !== 'GET') return;\n\n  const requestUrl = new URL(event.request.url);\n  if (requestUrl.origin !== location.origin) return;\n\n  event.respondWith(\n    caches.match(event.request).then(cached => {\n      if (cached) return cached;\n\n      return fetch(event.request).then(response => {\n        if (response && response.status === 200) {\n          const copy = response.clone();\n          caches.open(CACHE).then(cache => cache.put(event.request, copy));\n        }\n        return response;\n      }).catch(() => {\n        if (event.request.destination === 'document') {\n          return caches.match(new URL('./index.html', BASE).href);\n        }\n      });\n    })\n  );\n});\n", encoding="utf-8")
+          PY
+
+          touch _site/.nojekyll
+
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Crear artefacto
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Publicar
+        id: deployment
+        uses: actions/deploy-pages@v4
